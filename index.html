@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111317" />
+  <title>Botonera Museo</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">CONTROL DE SONIDO</div>
+      <h1 id="appTitle">Botonera Museo</h1>
+    </div>
+    <div class="header-actions">
+      <span id="spotifyStatus" class="status-pill offline"><span class="dot"></span> Spotify desconectado</span>
+      <button id="btnSettings" class="icon-btn" aria-label="Configuración">⚙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel now-panel">
+      <div class="section-head compact">
+        <div>
+          <div class="eyebrow">AHORA</div>
+          <h2 id="nowTitle">Sin reproducción</h2>
+          <p id="nowArtist" class="muted">Abrí Spotify en la notebook y conectá la botonera.</p>
+        </div>
+        <div class="device-wrap">
+          <label for="deviceSelect">Salida de audio</label>
+          <div class="inline">
+            <select id="deviceSelect"></select>
+            <button id="btnRefreshDevices" class="small-btn" title="Actualizar dispositivos">↻</button>
+          </div>
+        </div>
+      </div>
+      <div class="progress-row">
+        <span id="nowTime">0:00</span>
+        <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+        <span id="nowDuration">0:00</span>
+      </div>
+    </section>
+
+    <section class="panel background-panel">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">AMBIENTE</div>
+          <h2>Música de fondo</h2>
+        </div>
+      </div>
+
+      <div class="transport">
+        <button id="btnPrev" class="transport-btn">⏮</button>
+        <button id="btnPlayPause" class="transport-btn primary">▶</button>
+        <button id="btnNext" class="transport-btn">⏭</button>
+        <button id="btnShuffle" class="transport-btn" title="Aleatorio">🔀</button>
+        <button id="btnReturnBackground" class="return-btn" disabled>↩ Volver al fondo</button>
+        <button id="btnStopAll" class="stop-btn">■ PARAR</button>
+      </div>
+
+      <div class="volume-row">
+        <label for="volumeRange">Volumen</label>
+        <input id="volumeRange" type="range" min="0" max="100" value="75" />
+        <strong id="volumeValue">75%</strong>
+      </div>
+
+      <div class="playlist-box">
+        <label for="backgroundContext">Playlist/álbum de fondo de Spotify</label>
+        <div class="inline stack-mobile">
+          <input id="backgroundContext" type="text" placeholder="Pegá el enlace de una playlist de Spotify" />
+          <button id="btnSaveBackground" class="small-btn">Guardar</button>
+          <button id="btnStartBackground" class="small-btn accent">▶ Fondo</button>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <label for="globalSearch">Buscar una canción para pasar ahora</label>
+        <div class="inline">
+          <input id="globalSearch" type="search" placeholder="Ej: Glenn Miller In the Mood" />
+          <button id="btnGlobalSearch" class="small-btn accent">Buscar</button>
+        </div>
+        <div id="globalResults" class="search-results"></div>
+      </div>
+    </section>
+
+    <section class="panel scenes-panel">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">OBRA</div>
+          <h2>Escenas programadas</h2>
+          <p class="muted">Un toque dispara la canción desde el segundo guardado.</p>
+        </div>
+        <div class="inline wrap">
+          <button id="btnEditScenes" class="small-btn">Editar</button>
+          <button id="btnAddScene" class="add-btn">＋ Agregar botón</button>
+        </div>
+      </div>
+      <div id="scenesGrid" class="scenes-grid"></div>
+      <div id="emptyScenes" class="empty-state">
+        <div class="empty-icon">＋</div>
+        <strong>Todavía no hay escenas.</strong>
+        <span>En el ensayo, poné Spotify en el punto exacto y tocá “Agregar botón”.</span>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <dialog id="sceneDialog" class="dialog">
+    <form method="dialog" id="sceneForm">
+      <div class="dialog-head">
+        <div>
+          <div class="eyebrow">PROGRAMAR ESCENA</div>
+          <h2 id="sceneDialogTitle">Nuevo botón</h2>
+        </div>
+        <button type="button" id="btnCloseScene" class="icon-btn">×</button>
+      </div>
+
+      <input type="hidden" id="sceneId" />
+      <label>Nombre del botón
+        <input id="sceneName" type="text" maxlength="40" placeholder="Ej: Entrada de los novios" required />
+      </label>
+
+      <div class="capture-card">
+        <button type="button" id="btnCaptureNow" class="capture-btn">● Capturar lo que está sonando ahora</button>
+        <p>Guarda automáticamente la canción actual y el segundo exacto.</p>
+      </div>
+
+      <div id="selectedTrack" class="selected-track muted">Ninguna canción seleccionada.</div>
+
+      <div class="two-col">
+        <label>Minuto inicial
+          <input id="startMin" type="number" inputmode="numeric" min="0" value="0" />
+        </label>
+        <label>Segundo inicial
+          <input id="startSec" type="number" inputmode="decimal" min="0" max="59.999" step="0.1" value="0" />
+        </label>
+      </div>
+
+      <details class="manual-track">
+        <summary>Elegir otra canción</summary>
+        <label>Enlace de Spotify
+          <div class="inline">
+            <input id="trackUrl" type="text" placeholder="https://open.spotify.com/track/..." />
+            <button type="button" id="btnUseTrackUrl" class="small-btn">Usar</button>
+          </div>
+        </label>
+        <label>Buscar en Spotify
+          <div class="inline">
+            <input id="sceneSearch" type="search" placeholder="Nombre de canción o artista" />
+            <button type="button" id="btnSceneSearch" class="small-btn accent">Buscar</button>
+          </div>
+        </label>
+        <div id="sceneResults" class="search-results"></div>
+      </details>
+
+      <div class="optional-box">
+        <label class="check-row"><input id="autoStop" type="checkbox" /> Detener automáticamente esta escena</label>
+        <div id="endFields" class="hidden">
+          <button type="button" id="btnCaptureEnd" class="small-btn">● Usar posición actual como final</button>
+          <div class="two-col top-gap">
+            <label>Minuto final
+              <input id="endMin" type="number" inputmode="numeric" min="0" value="0" />
+            </label>
+            <label>Segundo final
+              <input id="endSec" type="number" inputmode="decimal" min="0" max="59.999" step="0.1" value="0" />
+            </label>
+          </div>
+        </div>
+        <label id="fadeRow" class="hidden">Fade de salida (segundos)
+          <input id="fadeSeconds" type="number" inputmode="decimal" min="0" max="10" step="0.5" value="0" />
+        </label>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" id="btnDeleteScene" class="danger-btn hidden">Eliminar</button>
+        <span class="spacer"></span>
+        <button type="button" id="btnCancelScene" class="small-btn">Cancelar</button>
+        <button type="submit" class="save-btn">Guardar botón</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="dialog settings-dialog">
+    <form method="dialog" id="settingsForm">
+      <div class="dialog-head">
+        <div>
+          <div class="eyebrow">CONFIGURACIÓN</div>
+          <h2>Spotify y botonera</h2>
+        </div>
+        <button type="button" id="btnCloseSettings" class="icon-btn">×</button>
+      </div>
+
+      <label>Título de la botonera
+        <input id="settingTitle" type="text" value="Botonera Museo" />
+      </label>
+
+      <label>Spotify Client ID
+        <input id="settingClientId" type="text" autocomplete="off" placeholder="Pegá el Client ID de tu app de Spotify" />
+      </label>
+
+      <div class="info-box">
+        <strong>Redirect URI para registrar en Spotify:</strong>
+        <code id="redirectUriText"></code>
+        <button type="button" id="btnCopyRedirect" class="small-btn">Copiar</button>
+      </div>
+
+      <div class="connection-actions">
+        <button type="button" id="btnSpotifyLogin" class="spotify-btn">Conectar con Spotify</button>
+        <button type="button" id="btnSpotifyLogout" class="small-btn">Cerrar sesión</button>
+      </div>
+
+      <hr />
+
+      <div class="backup-row">
+        <div>
+          <strong>Backup de escenas</strong>
+          <p class="muted">Exportá los botones por si cambiás de celular.</p>
+        </div>
+        <div class="inline wrap">
+          <button type="button" id="btnExport" class="small-btn">Exportar</button>
+          <label class="small-btn file-label">Importar<input id="importFile" type="file" accept="application/json" hidden /></label>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="submit" class="save-btn">Guardar configuración</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
