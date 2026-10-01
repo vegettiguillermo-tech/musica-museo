@@ -128,6 +128,15 @@
         <p>Guarda automáticamente la canción actual y el segundo exacto.</p>
       </div>
 
+      <div class="scene-search-card">
+        <label for="sceneSearch">Buscar tema en Spotify desde el celular</label>
+        <div class="inline">
+          <input id="sceneSearch" type="search" placeholder="Ej: La Vie en Rose Edith Piaf" />
+          <button type="button" id="btnSceneSearch" class="small-btn accent">Buscar</button>
+        </div>
+        <div id="sceneResults" class="search-results"></div>
+      </div>
+
       <div id="selectedTrack" class="selected-track muted">Ninguna canción seleccionada.</div>
 
       <div class="two-col">
@@ -140,23 +149,20 @@
       </div>
 
       <details class="manual-track">
-        <summary>Elegir otra canción</summary>
+        <summary>Usar un enlace de Spotify</summary>
         <label>Enlace de Spotify
           <div class="inline">
             <input id="trackUrl" type="text" placeholder="https://open.spotify.com/track/..." />
             <button type="button" id="btnUseTrackUrl" class="small-btn">Usar</button>
           </div>
         </label>
-        <label>Buscar en Spotify
-          <div class="inline">
-            <input id="sceneSearch" type="search" placeholder="Nombre de canción o artista" />
-            <button type="button" id="btnSceneSearch" class="small-btn accent">Buscar</button>
-          </div>
-        </label>
-        <div id="sceneResults" class="search-results"></div>
       </details>
 
       <div class="optional-box">
+        <label>Transición al entrar a este tema (segundos)
+          <input id="transitionSeconds" type="number" inputmode="decimal" min="0" max="8" step="0.5" value="2" />
+          <small class="field-help">Baja suavemente el tema anterior y hace entrar este. 0 = cambio instantáneo.</small>
+        </label>
         <label class="check-row"><input id="autoStop" type="checkbox" /> Detener automáticamente esta escena</label>
         <div id="endFields" class="hidden">
           <button type="button" id="btnCaptureEnd" class="small-btn">● Usar posición actual como final</button>
@@ -189,6 +195,7 @@
         <div>
           <div class="eyebrow">CONFIGURACIÓN</div>
           <h2>Spotify y botonera</h2>
+          <p class="muted version-note">Versión 3.0</p>
         </div>
         <button type="button" id="btnCloseSettings" class="icon-btn">×</button>
       </div>
@@ -200,6 +207,20 @@
       <label>Spotify Client ID
         <input id="settingClientId" type="text" autocomplete="off" placeholder="Pegá el Client ID de tu app de Spotify" />
       </label>
+
+      <div class="two-col">
+        <label>Transición predeterminada (segundos)
+          <input id="settingTransitionSeconds" type="number" inputmode="decimal" min="0" max="8" step="0.5" value="2" />
+        </label>
+        <label>Paso de VOL+ / VOL−
+          <input id="settingVolumeStep" type="number" inputmode="numeric" min="1" max="20" step="1" value="5" />
+        </label>
+      </div>
+
+      <div class="info-box physical-volume-info">
+        <strong>Botones físicos del teléfono</strong>
+        <span>La web normal no puede capturar VOL+ / VOL−. La app Android de Botonera Museo sí: esos botones cambian el volumen de Spotify en la notebook.</span>
+      </div>
 
       <div class="info-box">
         <strong>Redirect URI para registrar en Spotify:</strong>

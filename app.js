@@ -14,7 +14,7 @@ const SCOPES = [
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  settings: loadJSON(STORAGE.settings, { title: 'Botonera Museo', clientId: '' }),
+  settings: loadJSON(STORAGE.settings, { title: 'Botonera Museo', clientId: '', transitionSeconds: 2, volumeStep: 5 }),
   scenes: loadJSON(STORAGE.scenes, []),
   auth: loadJSON(STORAGE.auth, null),
   background: loadJSON(STORAGE.background, { context: '' }),
@@ -199,20 +199,46 @@ async function spotifyApi(path, options = {}, retry = true) {
   const token = await getToken();
   const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
   if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const method = String(options.method || 'GET').toUpperCase();
   const res = await fetch(`https://api.spotify.com/v1${path}`, { ...options, headers });
-  if (res.status === 401 && retry && await refreshAccessToken()) return spotifyApi(path, options, false);
+
+  if (res.status === 401 && retry && await refreshAccessToken()) {
+    return spotifyApi(path, options, false);
+  }
+
   if (!res.ok) {
     let message = `Spotify respondió ${res.status}`;
     try {
-      const data = await res.json();
-      message = data?.error?.message || data?.error_description || message;
+      const raw = await res.text();
+      if (raw) {
+        try {
+          const data = JSON.parse(raw);
+          message = data?.error?.message || data?.error_description || message;
+        } catch {
+          // Algunas respuestas de Spotify pueden venir sin JSON.
+          if (raw.length < 180 && !/^[A-Za-z0-9_-]{20,}$/.test(raw.trim())) message = raw;
+        }
+      }
     } catch {}
     if (res.status === 404) message = 'No hay un dispositivo Spotify activo. Abrí Spotify en la notebook y reproducí algo una vez.';
     if (res.status === 403) message = 'Spotify rechazó el control. Verificá Premium, permisos y el dispositivo elegido.';
+    if (res.status === 429) message = 'Spotify está limitando temporalmente las solicitudes. Esperá unos segundos y probá de nuevo.';
     throw new Error(message);
   }
-  if (res.status === 204) return null;
-  return res.json();
+
+  // Los comandos del reproductor (play, pausa, siguiente, volumen, etc.)
+  // no necesitan interpretar un cuerpo de respuesta. Spotify normalmente usa
+  // 204, pero ignoramos cualquier cuerpo de éxito para evitar errores si
+  // devuelve texto en vez de JSON.
+  if (res.status === 204 || res.status === 205 || method !== 'GET') return null;
+
+  const raw = await res.text();
+  if (!raw.trim()) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('Spotify devolvió una respuesta inesperada. Actualizá la página y probá nuevamente.');
+  }
 }
 
 function updateConnectionUI() {
@@ -342,7 +368,7 @@ async function togglePlayback() {
 async function skip(which) {
   try {
     const path = which === 'next' ? '/me/player/next' : '/me/player/previous';
-    await spotifyApi(`${path}${deviceQuery()}`, { method: 'POST' });
+    await smoothSwitch(() => spotifyApi(`${path}${deviceQuery()}`, { method: 'POST' }));
     clearSceneTimers();
     state.activeSceneId = null;
     setTimeout(() => refreshPlayback(), 450);
@@ -361,18 +387,99 @@ async function toggleShuffle() {
 }
 
 let volumeDebounce;
+async function setRemoteVolume(value, silent = false) {
+  const v = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  $('volumeRange').value = v;
+  $('volumeValue').textContent = `${v}%`;
+  try {
+    const q = new URLSearchParams({ volume_percent: String(v) });
+    if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
+    await spotifyApi(`/me/player/volume?${q}`, { method: 'PUT' });
+    if (state.playback?.device) state.playback.device.volume_percent = v;
+    return v;
+  } catch (e) {
+    if (!silent) toast(e.message, 'error');
+    throw e;
+  }
+}
+
 function onVolumeInput() {
   const v = Number($('volumeRange').value);
   $('volumeValue').textContent = `${v}%`;
   clearTimeout(volumeDebounce);
-  volumeDebounce = setTimeout(async () => {
-    try {
-      const q = new URLSearchParams({ volume_percent: String(v) });
-      if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
-      await spotifyApi(`/me/player/volume?${q}`, { method: 'PUT' });
-    } catch (e) { toast(e.message, 'error'); }
-  }, 180);
+  volumeDebounce = setTimeout(() => setRemoteVolume(v).catch(() => {}), 180);
 }
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function currentVolume() {
+  if (typeof state.playback?.device?.volume_percent === 'number') return state.playback.device.volume_percent;
+  return Math.max(0, Math.min(100, Number($('volumeRange').value) || 75));
+}
+
+async function fadeVolume(from, to, durationMs) {
+  const duration = Math.max(0, Number(durationMs) || 0);
+  if (duration <= 0) {
+    await setRemoteVolume(to, true);
+    return;
+  }
+  const steps = Math.max(2, Math.min(8, Math.round(duration / 300)));
+  for (let i = 1; i <= steps; i++) {
+    const value = from + ((to - from) * i / steps);
+    try { await setRemoteVolume(value, true); } catch {}
+    if (i < steps) await sleep(duration / steps);
+  }
+}
+
+function defaultTransitionSeconds() {
+  const n = Number(state.settings.transitionSeconds);
+  return Number.isFinite(n) ? Math.max(0, Math.min(8, n)) : 2;
+}
+
+async function smoothSwitch(action, seconds = defaultTransitionSeconds()) {
+  const totalMs = Math.max(0, Number(seconds) || 0) * 1000;
+  if (totalMs < 250) {
+    const startedAt = Date.now();
+    await action();
+    return Math.max(0, Date.now() - startedAt);
+  }
+  try { await refreshPlayback(); } catch {}
+  const target = currentVolume();
+  const wasPlaying = !!state.playback?.is_playing && !!state.playback?.item;
+  const fadeOutMs = wasPlaying ? Math.max(150, totalMs / 2) : 0;
+  const fadeInMs = wasPlaying ? Math.max(150, totalMs / 2) : Math.max(250, totalMs);
+  if (wasPlaying) await fadeVolume(target, 0, fadeOutMs);
+  else { try { await setRemoteVolume(0, true); } catch {} }
+  const startedAt = Date.now();
+  await action();
+  await sleep(140);
+  await fadeVolume(0, target, fadeInMs);
+  return Math.max(0, Date.now() - startedAt);
+}
+
+let hardwareVolumeTimer = null;
+let pendingHardwareVolume = null;
+function hardwareVolume(delta) {
+  const base = pendingHardwareVolume == null ? Number($('volumeRange').value || currentVolume()) : pendingHardwareVolume;
+  const next = Math.max(0, Math.min(100, Math.round(base + Number(delta || 0))));
+  pendingHardwareVolume = next;
+  $('volumeRange').value = next;
+  $('volumeValue').textContent = `${next}%`;
+  clearTimeout(hardwareVolumeTimer);
+  hardwareVolumeTimer = setTimeout(async () => {
+    const value = pendingHardwareVolume;
+    pendingHardwareVolume = null;
+    try { await setRemoteVolume(value, true); } catch (e) { toast(e.message, 'error'); }
+  }, 90);
+  return next;
+}
+
+// La app Android envolvente llama esta función cuando se presionan VOL+ / VOL-.
+window.MuseoBotonera = {
+  hardwareVolume: (delta) => hardwareVolume(delta),
+  volumeUp: () => hardwareVolume(Number(state.settings.volumeStep) || 5),
+  volumeDown: () => hardwareVolume(-(Number(state.settings.volumeStep) || 5))
+};
 
 async function searchTracks(query, targetEl, mode = 'play') {
   query = (query || '').trim();
@@ -396,15 +503,22 @@ function renderSearchResults(items, targetEl, mode) {
   items.forEach(track => {
     const row = document.createElement('div');
     row.className = 'result-row';
+    const cover = document.createElement('img');
+    cover.className = 'result-cover';
+    cover.alt = '';
+    cover.loading = 'lazy';
+    cover.src = track.album?.images?.[2]?.url || track.album?.images?.[1]?.url || track.album?.images?.[0]?.url || '';
+    if (!cover.src) cover.classList.add('hidden');
     const title = document.createElement('div');
     title.className = 'result-title';
-    title.innerHTML = `<strong>${escapeHtml(track.name)}</strong><span>${escapeHtml((track.artists || []).map(a => a.name).join(', '))}</span>`;
+    title.innerHTML = `<strong>${escapeHtml(track.name)}</strong><span>${escapeHtml((track.artists || []).map(a => a.name).join(', '))} · ${formatMs(track.duration_ms)}</span>`;
     const main = document.createElement('button');
     main.className = 'result-action';
     main.textContent = mode === 'select' ? 'Elegir' : '▶';
     main.onclick = async () => {
       if (mode === 'select') {
         selectSceneTrack(track);
+        if (!$('sceneName').value.trim()) $('sceneName').value = track.name;
         targetEl.innerHTML = '';
       } else {
         try {
@@ -412,12 +526,12 @@ function renderSearchResults(items, targetEl, mode) {
           $('btnReturnBackground').disabled = true;
           clearSceneTimers();
           state.activeSceneId = null;
-          await playTrack(track.uri, 0);
+          await smoothSwitch(() => playTrack(track.uri, 0));
           setTimeout(() => refreshPlayback(), 450);
         } catch (e) { toast(e.message, 'error'); }
       }
     };
-    row.append(title, main);
+    row.append(cover, title, main);
     if (mode === 'play') {
       const secondary = document.createElement('button');
       secondary.className = 'result-action secondary-action';
@@ -512,12 +626,14 @@ function openSceneDialog(scene = null, preselectedTrack = null) {
     setTimeInputs(scene.startMs || 0, $('startMin'), $('startSec'));
     if (scene.endMs) setTimeInputs(scene.endMs, $('endMin'), $('endSec'));
     $('fadeSeconds').value = scene.fadeSeconds || 0;
+    $('transitionSeconds').value = scene.transitionSeconds ?? defaultTransitionSeconds();
   } else {
     $('sceneName').value = '';
     state.selectedSceneTrack = null;
     setTimeInputs(0, $('startMin'), $('startSec'));
     setTimeInputs(0, $('endMin'), $('endSec'));
     $('fadeSeconds').value = 0;
+    $('transitionSeconds').value = defaultTransitionSeconds();
     if (preselectedTrack) selectSceneTrack(preselectedTrack);
   }
   $('sceneResults').innerHTML = '';
@@ -558,7 +674,8 @@ function saveSceneFromForm(event) {
     spotifyUrl: state.selectedSceneTrack.spotifyUrl,
     startMs,
     endMs,
-    fadeSeconds: endMs ? Math.max(0, Math.min(10, Number($('fadeSeconds').value) || 0)) : 0
+    fadeSeconds: endMs ? Math.max(0, Math.min(10, Number($('fadeSeconds').value) || 0)) : 0,
+    transitionSeconds: Math.max(0, Math.min(8, Number($('transitionSeconds').value) || 0))
   };
 
   if (existingIndex >= 0) state.scenes[existingIndex] = scene;
@@ -605,7 +722,7 @@ function renderScenes() {
     fire.innerHTML = `
       <span class="scene-number">ESCENA ${String(index + 1).padStart(2, '0')}</span>
       <span class="scene-name">${escapeHtml(scene.name)}</span>
-      <span class="scene-meta">${escapeHtml(scene.trackName || '')}<br>desde ${formatMs(scene.startMs)}${scene.endMs ? ` · hasta ${formatMs(scene.endMs)}` : ''}</span>`;
+      <span class="scene-meta">${escapeHtml(scene.trackName || '')}<br>desde ${formatMs(scene.startMs)}${scene.endMs ? ` · hasta ${formatMs(scene.endMs)}` : ''}${(scene.transitionSeconds ?? defaultTransitionSeconds()) > 0 ? ` · ↔ ${(scene.transitionSeconds ?? defaultTransitionSeconds())}s` : ''}</span>`;
     fire.onclick = () => fireScene(scene);
 
     const controls = document.createElement('div');
@@ -642,11 +759,11 @@ async function fireScene(scene) {
       state.previousPlayback = snap;
       $('btnReturnBackground').disabled = false;
     }
-    await playTrack(scene.trackUri, scene.startMs || 0);
+    const transitionElapsed = await smoothSwitch(() => playTrack(scene.trackUri, scene.startMs || 0), scene.transitionSeconds ?? defaultTransitionSeconds());
     state.activeSceneId = scene.id;
     renderScenes();
     toast(`${scene.name} · ${formatMs(scene.startMs)}`);
-    scheduleSceneEnd(scene);
+    scheduleSceneEnd(scene, transitionElapsed);
     setTimeout(() => refreshPlayback(), 500);
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -658,9 +775,9 @@ function clearSceneTimers() {
   state.fadeTimers = [];
 }
 
-function scheduleSceneEnd(scene) {
+function scheduleSceneEnd(scene, elapsedSinceStart = 0) {
   if (!scene.endMs || scene.endMs <= scene.startMs) return;
-  const total = scene.endMs - scene.startMs;
+  const total = Math.max(0, (scene.endMs - scene.startMs) - Math.max(0, Number(elapsedSinceStart) || 0));
   const fadeMs = Math.min(total, Math.max(0, Number(scene.fadeSeconds || 0) * 1000));
   if (fadeMs > 0) {
     state.sceneTimer = setTimeout(() => fadeOutAndPause(fadeMs), Math.max(0, total - fadeMs));
@@ -716,14 +833,16 @@ async function returnToBackground() {
   if (!p?.itemUri) return;
   try {
     clearSceneTimers();
-    if (p.contextUri) {
-      await spotifyApi(`/me/player/play${deviceQuery()}`, {
-        method: 'PUT',
-        body: JSON.stringify({ context_uri: p.contextUri, offset: { uri: p.itemUri }, position_ms: p.progressMs || 0 })
-      });
-    } else {
-      await playTrack(p.itemUri, p.progressMs || 0);
-    }
+    await smoothSwitch(async () => {
+      if (p.contextUri) {
+        await spotifyApi(`/me/player/play${deviceQuery()}`, {
+          method: 'PUT',
+          body: JSON.stringify({ context_uri: p.contextUri, offset: { uri: p.itemUri }, position_ms: p.progressMs || 0 })
+        });
+      } else {
+        await playTrack(p.itemUri, p.progressMs || 0);
+      }
+    });
     const q = new URLSearchParams({ state: String(!!p.shuffle) });
     if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
     spotifyApi(`/me/player/shuffle?${q}`, { method: 'PUT' }).catch(() => {});
@@ -745,7 +864,7 @@ async function startBackground() {
     state.activeSceneId = null;
     $('btnReturnBackground').disabled = true;
     clearSceneTimers();
-    await playContext(ref.uri);
+    await smoothSwitch(() => playContext(ref.uri));
     setTimeout(() => refreshPlayback(), 450);
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -775,6 +894,8 @@ async function requestWakeLock() {
 function openSettings() {
   $('settingTitle').value = state.settings.title || 'Botonera Museo';
   $('settingClientId').value = state.settings.clientId || '';
+  $('settingTransitionSeconds').value = defaultTransitionSeconds();
+  $('settingVolumeStep').value = Math.max(1, Math.min(20, Number(state.settings.volumeStep) || 5));
   $('redirectUriText').textContent = getRedirectUri();
   $('settingsDialog').showModal();
 }
@@ -783,6 +904,8 @@ function saveSettings(event) {
   event.preventDefault();
   state.settings.title = $('settingTitle').value.trim() || 'Botonera Museo';
   state.settings.clientId = $('settingClientId').value.trim();
+  state.settings.transitionSeconds = Math.max(0, Math.min(8, Number($('settingTransitionSeconds').value) || 0));
+  state.settings.volumeStep = Math.max(1, Math.min(20, Number($('settingVolumeStep').value) || 5));
   saveJSON(STORAGE.settings, state.settings);
   $('appTitle').textContent = state.settings.title;
   $('settingsDialog').close();
@@ -794,6 +917,8 @@ function exportBackup() {
     version: 1,
     exportedAt: new Date().toISOString(),
     title: state.settings.title,
+    transitionSeconds: defaultTransitionSeconds(),
+    volumeStep: Math.max(1, Math.min(20, Number(state.settings.volumeStep) || 5)),
     background: state.background,
     scenes: state.scenes
   };
@@ -814,6 +939,8 @@ async function importBackup(file) {
     state.scenes = data.scenes;
     state.background = data.background || { context: '' };
     if (data.title) state.settings.title = data.title;
+    if (typeof data.transitionSeconds === 'number') state.settings.transitionSeconds = data.transitionSeconds;
+    if (typeof data.volumeStep === 'number') state.settings.volumeStep = data.volumeStep;
     saveJSON(STORAGE.scenes, state.scenes);
     saveJSON(STORAGE.background, state.background);
     saveJSON(STORAGE.settings, state.settings);
@@ -874,6 +1001,9 @@ function bindEvents() {
 }
 
 async function init() {
+  if (typeof state.settings.transitionSeconds !== 'number') state.settings.transitionSeconds = 2;
+  if (typeof state.settings.volumeStep !== 'number') state.settings.volumeStep = 5;
+  saveJSON(STORAGE.settings, state.settings);
   bindEvents();
   $('appTitle').textContent = state.settings.title || 'Botonera Museo';
   $('backgroundContext').value = state.background.context || '';
