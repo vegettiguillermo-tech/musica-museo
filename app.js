@@ -14,10 +14,10 @@ const SCOPES = [
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  settings: loadJSON(STORAGE.settings, { title: 'Botonera Museo', clientId: '', transitionSeconds: 2, volumeStep: 5 }),
+  settings: loadJSON(STORAGE.settings, { title: 'Botonera Museo', clientId: '', transitionSeconds: 2, sceneDefaultVolume: 90, volumeStep: 5 }),
   scenes: loadJSON(STORAGE.scenes, []),
   auth: loadJSON(STORAGE.auth, null),
-  background: loadJSON(STORAGE.background, { context: '' }),
+  background: loadJSON(STORAGE.background, { context: '', volume: 60 }),
   devices: [],
   selectedDeviceId: '',
   playback: null,
@@ -329,10 +329,6 @@ function renderPlayback() {
   $('progressFill').style.width = `${pct}%`;
   $('btnPlayPause').textContent = p.is_playing ? '❚❚' : '▶';
   $('btnShuffle').classList.toggle('active', !!p.shuffle_state);
-  if (typeof p.device?.volume_percent === 'number') {
-    $('volumeRange').value = p.device.volume_percent;
-    $('volumeValue').textContent = `${p.device.volume_percent}%`;
-  }
 }
 
 async function playTrack(uri, positionMs = 0) {
@@ -389,8 +385,6 @@ async function toggleShuffle() {
 let volumeDebounce;
 async function setRemoteVolume(value, silent = false) {
   const v = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-  $('volumeRange').value = v;
-  $('volumeValue').textContent = `${v}%`;
   try {
     const q = new URLSearchParams({ volume_percent: String(v) });
     if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
@@ -403,18 +397,40 @@ async function setRemoteVolume(value, silent = false) {
   }
 }
 
+function getBackgroundVolume() {
+  const n = Number(state.background?.volume);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 60;
+}
+
+function defaultSceneVolume() {
+  const n = Number(state.settings.sceneDefaultVolume);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 90;
+}
+
+function updateBackgroundVolumeUI() {
+  const v = getBackgroundVolume();
+  $('volumeRange').value = v;
+  $('volumeValue').textContent = `${v}%`;
+}
+
 function onVolumeInput() {
-  const v = Number($('volumeRange').value);
+  const v = Math.max(0, Math.min(100, Math.round(Number($('volumeRange').value) || 0)));
+  state.background.volume = v;
+  saveJSON(STORAGE.background, state.background);
   $('volumeValue').textContent = `${v}%`;
   clearTimeout(volumeDebounce);
-  volumeDebounce = setTimeout(() => setRemoteVolume(v).catch(() => {}), 180);
+  // Si hay una escena activa, este control prepara el volumen del fondo para cuando volvamos.
+  // Si estamos en ambiente, también ajusta Spotify en vivo.
+  if (!state.activeSceneId) {
+    volumeDebounce = setTimeout(() => setRemoteVolume(v).catch(() => {}), 180);
+  }
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function currentVolume() {
   if (typeof state.playback?.device?.volume_percent === 'number') return state.playback.device.volume_percent;
-  return Math.max(0, Math.min(100, Number($('volumeRange').value) || 75));
+  return state.activeSceneId ? defaultSceneVolume() : getBackgroundVolume();
 }
 
 async function fadeVolume(from, to, durationMs) {
@@ -436,19 +452,25 @@ function defaultTransitionSeconds() {
   return Number.isFinite(n) ? Math.max(0, Math.min(8, n)) : 2;
 }
 
-async function smoothSwitch(action, seconds = defaultTransitionSeconds()) {
+async function smoothSwitch(action, seconds = defaultTransitionSeconds(), targetVolume = null) {
   const totalMs = Math.max(0, Number(seconds) || 0) * 1000;
+  try { await refreshPlayback(); } catch {}
+  const fromVolume = currentVolume();
+  const target = targetVolume == null
+    ? fromVolume
+    : Math.max(0, Math.min(100, Math.round(Number(targetVolume) || 0)));
+
   if (totalMs < 250) {
     const startedAt = Date.now();
     await action();
+    try { await setRemoteVolume(target, true); } catch {}
     return Math.max(0, Date.now() - startedAt);
   }
-  try { await refreshPlayback(); } catch {}
-  const target = currentVolume();
+
   const wasPlaying = !!state.playback?.is_playing && !!state.playback?.item;
   const fadeOutMs = wasPlaying ? Math.max(150, totalMs / 2) : 0;
   const fadeInMs = wasPlaying ? Math.max(150, totalMs / 2) : Math.max(250, totalMs);
-  if (wasPlaying) await fadeVolume(target, 0, fadeOutMs);
+  if (wasPlaying) await fadeVolume(fromVolume, 0, fadeOutMs);
   else { try { await setRemoteVolume(0, true); } catch {} }
   const startedAt = Date.now();
   await action();
@@ -460,11 +482,14 @@ async function smoothSwitch(action, seconds = defaultTransitionSeconds()) {
 let hardwareVolumeTimer = null;
 let pendingHardwareVolume = null;
 function hardwareVolume(delta) {
-  const base = pendingHardwareVolume == null ? Number($('volumeRange').value || currentVolume()) : pendingHardwareVolume;
+  const base = pendingHardwareVolume == null ? currentVolume() : pendingHardwareVolume;
   const next = Math.max(0, Math.min(100, Math.round(base + Number(delta || 0))));
   pendingHardwareVolume = next;
-  $('volumeRange').value = next;
-  $('volumeValue').textContent = `${next}%`;
+  if (!state.activeSceneId) {
+    state.background.volume = next;
+    saveJSON(STORAGE.background, state.background);
+    updateBackgroundVolumeUI();
+  }
   clearTimeout(hardwareVolumeTimer);
   hardwareVolumeTimer = setTimeout(async () => {
     const value = pendingHardwareVolume;
@@ -526,7 +551,7 @@ function renderSearchResults(items, targetEl, mode) {
           $('btnReturnBackground').disabled = true;
           clearSceneTimers();
           state.activeSceneId = null;
-          await smoothSwitch(() => playTrack(track.uri, 0));
+          await smoothSwitch(() => playTrack(track.uri, 0), defaultTransitionSeconds(), getBackgroundVolume());
           setTimeout(() => refreshPlayback(), 450);
         } catch (e) { toast(e.message, 'error'); }
       }
@@ -627,6 +652,7 @@ function openSceneDialog(scene = null, preselectedTrack = null) {
     if (scene.endMs) setTimeInputs(scene.endMs, $('endMin'), $('endSec'));
     $('fadeSeconds').value = scene.fadeSeconds || 0;
     $('transitionSeconds').value = scene.transitionSeconds ?? defaultTransitionSeconds();
+    $('sceneVolumeRange').value = scene.volume ?? defaultSceneVolume();
   } else {
     $('sceneName').value = '';
     state.selectedSceneTrack = null;
@@ -634,8 +660,10 @@ function openSceneDialog(scene = null, preselectedTrack = null) {
     setTimeInputs(0, $('endMin'), $('endSec'));
     $('fadeSeconds').value = 0;
     $('transitionSeconds').value = defaultTransitionSeconds();
+    $('sceneVolumeRange').value = defaultSceneVolume();
     if (preselectedTrack) selectSceneTrack(preselectedTrack);
   }
+  $('sceneVolumeValue').textContent = `${$('sceneVolumeRange').value}%`;
   $('sceneResults').innerHTML = '';
   $('trackUrl').value = '';
   renderSelectedTrack();
@@ -675,7 +703,8 @@ function saveSceneFromForm(event) {
     startMs,
     endMs,
     fadeSeconds: endMs ? Math.max(0, Math.min(10, Number($('fadeSeconds').value) || 0)) : 0,
-    transitionSeconds: Math.max(0, Math.min(8, Number($('transitionSeconds').value) || 0))
+    transitionSeconds: Math.max(0, Math.min(8, Number($('transitionSeconds').value) || 0)),
+    volume: Math.max(0, Math.min(100, Math.round(Number($('sceneVolumeRange').value) || 0)))
   };
 
   if (existingIndex >= 0) state.scenes[existingIndex] = scene;
@@ -722,7 +751,7 @@ function renderScenes() {
     fire.innerHTML = `
       <span class="scene-number">ESCENA ${String(index + 1).padStart(2, '0')}</span>
       <span class="scene-name">${escapeHtml(scene.name)}</span>
-      <span class="scene-meta">${escapeHtml(scene.trackName || '')}<br>desde ${formatMs(scene.startMs)}${scene.endMs ? ` · hasta ${formatMs(scene.endMs)}` : ''}${(scene.transitionSeconds ?? defaultTransitionSeconds()) > 0 ? ` · ↔ ${(scene.transitionSeconds ?? defaultTransitionSeconds())}s` : ''}</span>`;
+      <span class="scene-meta">${escapeHtml(scene.trackName || '')}<br>desde ${formatMs(scene.startMs)}${scene.endMs ? ` · hasta ${formatMs(scene.endMs)}` : ''} · 🔊 ${scene.volume ?? defaultSceneVolume()}%${(scene.transitionSeconds ?? defaultTransitionSeconds()) > 0 ? ` · ↔ ${(scene.transitionSeconds ?? defaultTransitionSeconds())}s` : ''}</span>`;
     fire.onclick = () => fireScene(scene);
 
     const controls = document.createElement('div');
@@ -759,7 +788,7 @@ async function fireScene(scene) {
       state.previousPlayback = snap;
       $('btnReturnBackground').disabled = false;
     }
-    const transitionElapsed = await smoothSwitch(() => playTrack(scene.trackUri, scene.startMs || 0), scene.transitionSeconds ?? defaultTransitionSeconds());
+    const transitionElapsed = await smoothSwitch(() => playTrack(scene.trackUri, scene.startMs || 0), scene.transitionSeconds ?? defaultTransitionSeconds(), scene.volume ?? defaultSceneVolume());
     state.activeSceneId = scene.id;
     renderScenes();
     toast(`${scene.name} · ${formatMs(scene.startMs)}`);
@@ -792,7 +821,7 @@ function scheduleSceneEnd(scene, elapsedSinceStart = 0) {
 }
 
 async function fadeOutAndPause(durationMs) {
-  let startVolume = Number($('volumeRange').value) || 75;
+  let startVolume = state.activeSceneId ? defaultSceneVolume() : getBackgroundVolume();
   try {
     await refreshPlayback();
     if (typeof state.playback?.device?.volume_percent === 'number') startVolume = state.playback.device.volume_percent;
@@ -805,8 +834,6 @@ async function fadeOutAndPause(durationMs) {
         const q = new URLSearchParams({ volume_percent: String(vol) });
         if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
         await spotifyApi(`/me/player/volume?${q}`, { method: 'PUT' });
-        $('volumeRange').value = vol;
-        $('volumeValue').textContent = `${vol}%`;
         if (i === steps) {
           await pausePlayback();
           const restoreQ = new URLSearchParams({ volume_percent: String(startVolume) });
@@ -814,8 +841,6 @@ async function fadeOutAndPause(durationMs) {
           setTimeout(async () => {
             try {
               await spotifyApi(`/me/player/volume?${restoreQ}`, { method: 'PUT' });
-              $('volumeRange').value = startVolume;
-              $('volumeValue').textContent = `${startVolume}%`;
             } catch {}
           }, 350);
           state.activeSceneId = null;
@@ -842,7 +867,7 @@ async function returnToBackground() {
       } else {
         await playTrack(p.itemUri, p.progressMs || 0);
       }
-    });
+    }, defaultTransitionSeconds(), getBackgroundVolume());
     const q = new URLSearchParams({ state: String(!!p.shuffle) });
     if (state.selectedDeviceId) q.set('device_id', state.selectedDeviceId);
     spotifyApi(`/me/player/shuffle?${q}`, { method: 'PUT' }).catch(() => {});
@@ -864,7 +889,7 @@ async function startBackground() {
     state.activeSceneId = null;
     $('btnReturnBackground').disabled = true;
     clearSceneTimers();
-    await smoothSwitch(() => playContext(ref.uri));
+    await smoothSwitch(() => playContext(ref.uri), defaultTransitionSeconds(), getBackgroundVolume());
     setTimeout(() => refreshPlayback(), 450);
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -895,6 +920,7 @@ function openSettings() {
   $('settingTitle').value = state.settings.title || 'Botonera Museo';
   $('settingClientId').value = state.settings.clientId || '';
   $('settingTransitionSeconds').value = defaultTransitionSeconds();
+  $('settingSceneVolume').value = defaultSceneVolume();
   $('settingVolumeStep').value = Math.max(1, Math.min(20, Number(state.settings.volumeStep) || 5));
   $('redirectUriText').textContent = getRedirectUri();
   $('settingsDialog').showModal();
@@ -905,6 +931,7 @@ function saveSettings(event) {
   state.settings.title = $('settingTitle').value.trim() || 'Botonera Museo';
   state.settings.clientId = $('settingClientId').value.trim();
   state.settings.transitionSeconds = Math.max(0, Math.min(8, Number($('settingTransitionSeconds').value) || 0));
+  state.settings.sceneDefaultVolume = Math.max(0, Math.min(100, Math.round(Number($('settingSceneVolume').value) || 0)));
   state.settings.volumeStep = Math.max(1, Math.min(20, Number($('settingVolumeStep').value) || 5));
   saveJSON(STORAGE.settings, state.settings);
   $('appTitle').textContent = state.settings.title;
@@ -918,15 +945,31 @@ function exportBackup() {
     exportedAt: new Date().toISOString(),
     title: state.settings.title,
     transitionSeconds: defaultTransitionSeconds(),
+    sceneDefaultVolume: defaultSceneVolume(),
     volumeStep: Math.max(1, Math.min(20, Number(state.settings.volumeStep) || 5)),
     background: state.background,
     scenes: state.scenes
   };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+
+  const filename = `botonera-museo-${new Date().toISOString().slice(0,10)}.json`;
+  const json = JSON.stringify(data, null, 2);
+
+  // Dentro de la app Android usamos el selector nativo para poder guardar
+  // el archivo aunque la página esté corriendo dentro de una WebView.
+  if (window.AndroidBridge && typeof window.AndroidBridge.saveTextFile === 'function') {
+    window.AndroidBridge.saveTextFile(filename, json);
+    toast('Elegí dónde guardar el backup.');
+    return;
+  }
+
+  // Navegador normal (Chrome, Edge, etc.).
+  const blob = new Blob([json], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `botonera-museo-${new Date().toISOString().slice(0,10)}.json`;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
@@ -940,11 +983,13 @@ async function importBackup(file) {
     state.background = data.background || { context: '' };
     if (data.title) state.settings.title = data.title;
     if (typeof data.transitionSeconds === 'number') state.settings.transitionSeconds = data.transitionSeconds;
+    if (typeof data.sceneDefaultVolume === 'number') state.settings.sceneDefaultVolume = data.sceneDefaultVolume;
     if (typeof data.volumeStep === 'number') state.settings.volumeStep = data.volumeStep;
     saveJSON(STORAGE.scenes, state.scenes);
     saveJSON(STORAGE.background, state.background);
     saveJSON(STORAGE.settings, state.settings);
     $('backgroundContext').value = state.background.context || '';
+    updateBackgroundVolumeUI();
     $('appTitle').textContent = state.settings.title;
     renderScenes();
     toast('Backup importado.');
@@ -991,6 +1036,7 @@ function bindEvents() {
   $('btnUseTrackUrl').onclick = useTrackUrl;
   $('btnSceneSearch').onclick = () => searchTracks($('sceneSearch').value, $('sceneResults'), 'select');
   $('sceneSearch').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('btnSceneSearch').click(); } };
+  $('sceneVolumeRange').oninput = () => { $('sceneVolumeValue').textContent = `${$('sceneVolumeRange').value}%`; };
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
@@ -1002,11 +1048,16 @@ function bindEvents() {
 
 async function init() {
   if (typeof state.settings.transitionSeconds !== 'number') state.settings.transitionSeconds = 2;
+  if (typeof state.settings.sceneDefaultVolume !== 'number') state.settings.sceneDefaultVolume = 90;
   if (typeof state.settings.volumeStep !== 'number') state.settings.volumeStep = 5;
+  if (!state.background || typeof state.background !== 'object') state.background = { context: '', volume: 60 };
+  if (typeof state.background.volume !== 'number') state.background.volume = 60;
   saveJSON(STORAGE.settings, state.settings);
+  saveJSON(STORAGE.background, state.background);
   bindEvents();
   $('appTitle').textContent = state.settings.title || 'Botonera Museo';
   $('backgroundContext').value = state.background.context || '';
+  updateBackgroundVolumeUI();
   $('redirectUriText').textContent = getRedirectUri();
   updateConnectionUI();
   renderScenes();

@@ -56,14 +56,13 @@
         <button id="btnPlayPause" class="transport-btn primary">▶</button>
         <button id="btnNext" class="transport-btn">⏭</button>
         <button id="btnShuffle" class="transport-btn" title="Aleatorio">🔀</button>
-        <button id="btnReturnBackground" class="return-btn" disabled>↩ Volver al fondo</button>
         <button id="btnStopAll" class="stop-btn">■ PARAR</button>
       </div>
 
       <div class="volume-row">
-        <label for="volumeRange">Volumen</label>
-        <input id="volumeRange" type="range" min="0" max="100" value="75" />
-        <strong id="volumeValue">75%</strong>
+        <label for="volumeRange">Volumen de fondo</label>
+        <input id="volumeRange" type="range" min="0" max="100" value="60" />
+        <strong id="volumeValue">60%</strong>
       </div>
 
       <div class="playlist-box">
@@ -97,6 +96,12 @@
           <button id="btnAddScene" class="add-btn">＋ Agregar botón</button>
         </div>
       </div>
+
+      <div class="scene-return-wrap">
+        <button id="btnReturnBackground" class="return-btn scene-return-btn" disabled>↩ Volver a la música de fondo</button>
+        <span class="muted scene-return-help">Retoma el tema de ambiente donde estaba antes de disparar una escena.</span>
+      </div>
+
       <div id="scenesGrid" class="scenes-grid"></div>
       <div id="emptyScenes" class="empty-state">
         <div class="empty-icon">＋</div>
@@ -159,6 +164,13 @@
       </details>
 
       <div class="optional-box">
+        <label>Volumen de esta escena
+          <div class="scene-volume-control">
+            <input id="sceneVolumeRange" type="range" min="0" max="100" step="1" value="90" />
+            <strong id="sceneVolumeValue">90%</strong>
+          </div>
+          <small class="field-help">Es independiente del volumen de la música de fondo.</small>
+        </label>
         <label>Transición al entrar a este tema (segundos)
           <input id="transitionSeconds" type="number" inputmode="decimal" min="0" max="8" step="0.5" value="2" />
           <small class="field-help">Baja suavemente el tema anterior y hace entrar este. 0 = cambio instantáneo.</small>
@@ -195,7 +207,7 @@
         <div>
           <div class="eyebrow">CONFIGURACIÓN</div>
           <h2>Spotify y botonera</h2>
-          <p class="muted version-note">Versión 3.0</p>
+          <p class="muted version-note">Versión 3.2</p>
         </div>
         <button type="button" id="btnCloseSettings" class="icon-btn">×</button>
       </div>
@@ -212,10 +224,14 @@
         <label>Transición predeterminada (segundos)
           <input id="settingTransitionSeconds" type="number" inputmode="decimal" min="0" max="8" step="0.5" value="2" />
         </label>
-        <label>Paso de VOL+ / VOL−
-          <input id="settingVolumeStep" type="number" inputmode="numeric" min="1" max="20" step="1" value="5" />
+        <label>Volumen predeterminado de escenas
+          <input id="settingSceneVolume" type="number" inputmode="numeric" min="0" max="100" step="1" value="90" />
         </label>
       </div>
+
+      <label>Paso de VOL+ / VOL−
+        <input id="settingVolumeStep" type="number" inputmode="numeric" min="1" max="20" step="1" value="5" />
+      </label>
 
       <div class="info-box physical-volume-info">
         <strong>Botones físicos del teléfono</strong>
